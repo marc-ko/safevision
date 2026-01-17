@@ -156,7 +156,9 @@ def print_result(result: dict, verbose: bool = False):
     else:
         print(f"Unsafe (Detected {result.get('total_points_detected', 0)} points)")
         if result.get('censored_to'):
-            print(f"Censored version saved to: {result['censored_to']}")
+            print(f"Censored version (full blur) saved to: {result['censored_to']}")
+        if result.get('face_censored_to'):
+            print(f"Face-censored version (face blur only) saved to: {result['face_censored_to']}")
         if result.get('moved_to'):
             print(f"Moved to: {result['moved_to']}")
         

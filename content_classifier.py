@@ -42,6 +42,9 @@ UNSAFE_FOLDER = "unsafe_images"
 # Folder to save censored (blurred) versions of unsafe images (None = don't censor)
 CENSOR_FOLDER = "censor_images"
 
+# Folder to save face-censored versions (None = don't create face-censored versions)
+FACE_CENSOR_FOLDER = "face_censors"
+
 # Blur intensity for censoring (higher = more blur, typical range: 1-50)
 # Lower values (5-15) = light blur, Higher values (20-50) = heavy blur
 BLUR_INTENSITY = 50
@@ -61,7 +64,7 @@ class ThreePointRuleClassifier:
     """
     
     def __init__(self, confidence_threshold: Optional[float] = None, safe_folder: Optional[str] = None, unsafe_folder: Optional[str] = None, 
-                 genitalia_threshold: Optional[float] = None, censor_folder: Optional[str] = None):
+                 genitalia_threshold: Optional[float] = None, censor_folder: Optional[str] = None, face_censor_folder: Optional[str] = None):
         """
         Initialize the classifier
         
@@ -77,6 +80,8 @@ class ThreePointRuleClassifier:
                                 If still None, uses confidence_threshold * 0.6
             censor_folder: Optional path to folder where censored (blurred) versions will be saved
                           If None, uses CENSOR_FOLDER from top of file (default: None, no censoring)
+            face_censor_folder: Optional path to folder where face-censored versions will be saved
+                               If None, uses FACE_CENSOR_FOLDER from top of file (default: None, no face censoring)
         """
         self.detector = NudeDetector()
         
@@ -96,12 +101,16 @@ class ThreePointRuleClassifier:
         if censor_folder is None:
             censor_folder = CENSOR_FOLDER
         
+        if face_censor_folder is None:
+            face_censor_folder = FACE_CENSOR_FOLDER
+        
         # Always use module-level variables for blur and video trim
         self.confidence_threshold = confidence_threshold
         self.genitalia_threshold = genitalia_threshold
         self.safe_folder = safe_folder
         self.unsafe_folder = unsafe_folder
         self.censor_folder = censor_folder
+        self.face_censor_folder = face_censor_folder
         self.blur_intensity = BLUR_INTENSITY
         self.video_trim_percentage = VIDEO_TRIM_PERCENTAGE
         
@@ -188,6 +197,7 @@ class ThreePointRuleClassifier:
             # Move to appropriate folder based on classification
             moved_to = None
             censored_to = None
+            face_censored_to = None
             
             if is_safe and self.safe_folder:
                 moved_to = self._move_to_folder(image_path, self.safe_folder)
@@ -195,6 +205,10 @@ class ThreePointRuleClassifier:
                 # Create censored version first if censor_folder is set
                 if self.censor_folder:
                     censored_to = self._apply_blur_censor(image_path)
+                
+                # Create face-censored version if face_censor_folder is set
+                if self.face_censor_folder:
+                    face_censored_to = self._apply_blur_face_censor(image_path)
                 
                 # Then move original to unsafe folder
                 if self.unsafe_folder:
@@ -205,6 +219,7 @@ class ThreePointRuleClassifier:
                 'image_path': image_path,
                 'moved_to': moved_to,
                 'censored_to': censored_to,
+                'face_censored_to': face_censored_to,
                 'total_points_detected': total_points,
                 'detected_points': detected_points,
                 'reason': '三點不露，內容安全' if is_safe else f'檢測到 {total_points} 點，不符合三點不露標準',
@@ -411,7 +426,7 @@ class ThreePointRuleClassifier:
                 cap.release()
                 return None
             
-a            # Process first N% of frames
+            # Process first N% of frames
             kernel_size = self.blur_intensity * 2 + 1
             frame_count = 0
             
@@ -432,6 +447,103 @@ a            # Process first N% of frames
             
         except Exception as e:
             print(f"Warning: Failed to create censored video: {str(e)}")
+            return None
+    
+    def _apply_blur_face_censor(self, file_path: str) -> Optional[str]:
+        """
+        Apply face-only blur filter to censor faces in images or videos
+        Uses face_blur module to detect and blur only face regions
+        
+        Args:
+            file_path: Path to the image or video file
+            
+        Returns:
+            Path to face-censored file if successful, None otherwise
+        """
+        if not self.face_censor_folder:
+            return None
+        
+        try:
+            from face_blur import FaceBlurProcessor
+            
+            source_path = Path(file_path)
+            if not source_path.exists():
+                return None
+            
+            # Create face censor folder if it doesn't exist
+            face_censor_path = Path(self.face_censor_folder)
+            face_censor_path.mkdir(parents=True, exist_ok=True)
+            
+            # Initialize face blur processor
+            face_processor = FaceBlurProcessor(blur_intensity=self.blur_intensity)
+            
+            # Check if face detector is available
+            if face_processor.detection_method is None:
+                print("Warning: Face detector not available, skipping face censoring")
+                return None
+            
+            # Check if it's a video file
+            video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv')
+            is_video = source_path.suffix.lower() in video_extensions
+            
+            # First, check if there are any faces in the image/video
+            import cv2
+            if is_video:
+                # For video, check first frame for faces
+                cap = cv2.VideoCapture(str(source_path))
+                if cap.isOpened():
+                    ret, frame = cap.read()
+                    cap.release()
+                    if ret:
+                        faces = face_processor.detect_faces(frame)
+                        if not faces:
+                            print("No faces detected in video, skipping face censoring")
+                            return None
+                else:
+                    return None
+            else:
+                # For image, check if faces exist
+                img = cv2.imread(str(source_path))
+                if img is None:
+                    return None
+                faces = face_processor.detect_faces(img)
+                if not faces:
+                    print("No faces detected in image, skipping face censoring")
+                    return None
+            
+            # Prepare output path
+            filename = source_path.name
+            dest_path = face_censor_path / filename
+            
+            # Handle name conflicts
+            if dest_path.exists():
+                stem = source_path.stem
+                suffix = source_path.suffix
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                dest_path = face_censor_path / f"{stem}_{timestamp}{suffix}"
+            
+            if is_video:
+                # Calculate max frames if video trim is enabled
+                if self.video_trim_percentage:
+                    cap = cv2.VideoCapture(str(source_path))
+                    if cap.isOpened():
+                        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        max_frames = max(1, int(total_frames * self.video_trim_percentage)) if total_frames > 0 else None
+                        cap.release()
+                    else:
+                        max_frames = None
+                else:
+                    max_frames = None
+                
+                return face_processor.process_video(str(source_path), str(dest_path), max_frames=max_frames)
+            else:
+                return face_processor.process_image(str(source_path), str(dest_path))
+            
+        except ImportError:
+            print(f"Warning: face_blur module required for face censoring. Make sure face_blur.py exists.")
+            return None
+        except Exception as e:
+            print(f"Warning: Failed to create face-censored version: {str(e)}")
             return None
     
     def _save_results_append(self, output_file: str, new_results):
@@ -653,6 +765,7 @@ a            # Process first N% of frames
             # Move to appropriate folder based on classification
             moved_to = None
             censored_to = None
+            face_censored_to = None
             
             if is_safe and self.safe_folder:
                 moved_to = self._move_to_folder(video_path, self.safe_folder)
@@ -660,6 +773,10 @@ a            # Process first N% of frames
                 # Create censored version first if censor_folder is set
                 if self.censor_folder:
                     censored_to = self._apply_blur_censor(video_path)
+                
+                # Create face-censored version if face_censor_folder is set
+                if self.face_censor_folder:
+                    face_censored_to = self._apply_blur_face_censor(video_path)
                 
                 # Then move original to unsafe folder
                 if self.unsafe_folder:
@@ -673,6 +790,7 @@ a            # Process first N% of frames
                 'sampled_frames': len(frame_results),
                 'moved_to': moved_to,
                 'censored_to': censored_to,
+                'face_censored_to': face_censored_to,
                 'total_points_detected': max_total_points,
                 'detected_points': all_detected_points,
                 'reason': '三點不露，內容安全' if is_safe else f'檢測到 {max_total_points} 點，不符合三點不露標準',

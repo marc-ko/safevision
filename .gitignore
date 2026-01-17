@@ -1,0 +1,14 @@
+.env
+face_censors/*
+safe_images/*
+unsafe_images/*
+censor_images/*
+.pytest_cache/*
+.ruff_cache/*
+.mypy_cache/*
+.pytest_cache/*
+.ruff_cache/*
+.mypy_cache/*
+
+__pycache__/
+classification_results.json
