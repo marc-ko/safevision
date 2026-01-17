@@ -1180,7 +1180,7 @@ class ThreePointRuleClassifier:
                     has_content = True
                     break
             
-            if not has_content:inst
+            if not has_content:
                 return None
             
             # Create result_pack folder if it doesn't exist
