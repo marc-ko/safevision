@@ -3,6 +3,9 @@ face_censors/*
 safe_images/*
 unsafe_images/*
 censor_images/*
+result_pack/*
+untagged/*
+
 .pytest_cache/*
 .ruff_cache/*
 .mypy_cache/*

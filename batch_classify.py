@@ -117,6 +117,9 @@ Examples:
         classifier._save_results_append(output_file, result)
         print(f"\nResults saved to: {output_file}")
         
+        # Create zip file of output folders after single file classification
+        classifier._create_output_zip()
+        
     elif input_path.is_dir():
         # Directory
         print(f"Processing directory: {args.input}")

@@ -21,6 +21,8 @@ from typing import Dict, List, Tuple, Optional
 import json
 import shutil
 from datetime import datetime
+import zipfile
+import numpy as np
 
 # ============================================================================
 # CONFIGURATION VARIABLES - Edit these to customize behavior
@@ -150,7 +152,7 @@ class ThreePointRuleClassifier:
             }
         }
     
-    def classify_image(self, image_path: str) -> Dict:
+    def classify_image(self, image_path: str, preserve_subfolder: Optional[str] = None) -> Dict:
         """
         Classify a single image based on three point rule
         
@@ -160,7 +162,8 @@ class ThreePointRuleClassifier:
         Returns:
             Dictionary containing classification results
         """
-        if not Path(image_path).exists():
+        # Check if file exists (handle Unicode paths)
+        if not os.path.exists(image_path):
             return {
                 'safe': False,
                 'error': f'Image file not found: {image_path}',
@@ -168,8 +171,33 @@ class ThreePointRuleClassifier:
             }
         
         try:
-            # Detect all body parts in the image
-            results = self.detector.detect(image_path)
+            # For Unicode paths, read image first and save to temp file
+            # NudeNet's detect() method may not handle Unicode paths correctly
+            import cv2
+            import tempfile
+            
+            img = self._imread_unicode(image_path)
+            if img is None:
+                return {
+                    'safe': False,
+                    'error': f'Could not read image file: {image_path}',
+                    'detected_points': []
+                }
+            
+            # Save to temporary file with ASCII path for NudeNet
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+                cv2.imwrite(tmp_path, img)
+            
+            try:
+                # Detect all body parts in the image
+                results = self.detector.detect(tmp_path)
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
             
             # Check for critical points
             detected_points = []
@@ -200,19 +228,19 @@ class ThreePointRuleClassifier:
             face_censored_to = None
             
             if is_safe and self.safe_folder:
-                moved_to = self._move_to_folder(image_path, self.safe_folder)
+                moved_to = self._move_to_folder(image_path, self.safe_folder, preserve_subfolder)
             elif not is_safe:
                 # Create censored version first if censor_folder is set
                 if self.censor_folder:
-                    censored_to = self._apply_blur_censor(image_path)
+                    censored_to = self._apply_blur_censor(image_path, preserve_subfolder)
                 
                 # Create face-censored version if face_censor_folder is set
                 if self.face_censor_folder:
-                    face_censored_to = self._apply_blur_face_censor(image_path)
+                    face_censored_to = self._apply_blur_face_censor(image_path, preserve_subfolder)
                 
                 # Then move original to unsafe folder
                 if self.unsafe_folder:
-                    moved_to = self._move_to_folder(image_path, self.unsafe_folder)
+                    moved_to = self._move_to_folder(image_path, self.unsafe_folder, preserve_subfolder)
             
             return {
                 'safe': is_safe,
@@ -241,13 +269,14 @@ class ThreePointRuleClassifier:
                 'detected_points': []
             }
     
-    def _move_to_folder(self, image_path: str, target_folder: str) -> Optional[str]:
+    def _move_to_folder(self, image_path: str, target_folder: str, preserve_subfolder: Optional[str] = None) -> Optional[str]:
         """
         Move image to target folder
         
         Args:
             image_path: Path to the image file
             target_folder: Target folder path
+            preserve_subfolder: Optional subfolder name to preserve structure (e.g., "glass_girl")
             
         Returns:
             New path if moved successfully, None otherwise
@@ -262,6 +291,9 @@ class ThreePointRuleClassifier:
             
             # Create target folder if it doesn't exist
             target_path = Path(target_folder)
+            if preserve_subfolder:
+                # Preserve subfolder structure
+                target_path = target_path / preserve_subfolder
             target_path.mkdir(parents=True, exist_ok=True)
             
             # Get filename and handle name conflicts
@@ -283,13 +315,14 @@ class ThreePointRuleClassifier:
             print(f"Warning: Failed to move {image_path} to {target_folder}: {str(e)}")
             return None
     
-    def _apply_blur_censor(self, file_path: str) -> Optional[str]:
+    def _apply_blur_censor(self, file_path: str, preserve_subfolder: Optional[str] = None) -> Optional[str]:
         """
         Apply light blur filter to censor unsafe content (images or videos)
         Uses BLUR_INTENSITY and VIDEO_TRIM_DURATION from module-level variables
         
         Args:
             file_path: Path to the image or video file
+            preserve_subfolder: Optional subfolder name to preserve structure
             
         Returns:
             Path to censored file if successful, None otherwise
@@ -306,6 +339,8 @@ class ThreePointRuleClassifier:
             
             # Create censor folder if it doesn't exist
             censor_path = Path(self.censor_folder)
+            if preserve_subfolder:
+                censor_path = censor_path / preserve_subfolder
             censor_path.mkdir(parents=True, exist_ok=True)
             
             # Check if it's a video file
@@ -313,9 +348,9 @@ class ThreePointRuleClassifier:
             is_video = source_path.suffix.lower() in video_extensions
             
             if is_video:
-                return self._apply_blur_censor_video(file_path)
+                return self._apply_blur_censor_video(file_path, preserve_subfolder)
             else:
-                return self._apply_blur_censor_image(file_path)
+                return self._apply_blur_censor_image(file_path, preserve_subfolder)
             
         except ImportError:
             print(f"Warning: OpenCV required for blur censoring. Install with: pip install opencv-python")
@@ -324,13 +359,14 @@ class ThreePointRuleClassifier:
             print(f"Warning: Failed to create censored version: {str(e)}")
             return None
     
-    def _apply_blur_censor_image(self, image_path: str) -> Optional[str]:
+    def _apply_blur_censor_image(self, image_path: str, preserve_subfolder: Optional[str] = None) -> Optional[str]:
         """
         Apply blur to image file
         Uses BLUR_INTENSITY from module-level variable
         
         Args:
             image_path: Path to the image file
+            preserve_subfolder: Optional subfolder name to preserve structure
             
         Returns:
             Path to censored image if successful, None otherwise
@@ -340,9 +376,12 @@ class ThreePointRuleClassifier:
             
             source_path = Path(image_path)
             censor_path = Path(self.censor_folder)
+            if preserve_subfolder:
+                censor_path = censor_path / preserve_subfolder
+            censor_path.mkdir(parents=True, exist_ok=True)
             
-            # Read image
-            img = cv2.imread(str(source_path))
+            # Read image (handle Chinese characters in path)
+            img = self._imread_unicode(str(source_path))
             if img is None:
                 return None
             
@@ -369,7 +408,7 @@ class ThreePointRuleClassifier:
             print(f"Warning: Failed to create censored image: {str(e)}")
             return None
     
-    def _apply_blur_censor_video(self, video_path: str) -> Optional[str]:
+    def _apply_blur_censor_video(self, video_path: str, preserve_subfolder: Optional[str] = None) -> Optional[str]:
         """
         Apply blur to video file and trim to first N% of frames
         Uses BLUR_INTENSITY and VIDEO_TRIM_PERCENTAGE from module-level variables
@@ -385,10 +424,13 @@ class ThreePointRuleClassifier:
             
             source_path = Path(video_path)
             censor_path = Path(self.censor_folder)
+            if preserve_subfolder:
+                censor_path = censor_path / preserve_subfolder
+            censor_path.mkdir(parents=True, exist_ok=True)
             
-            # Open video
-            cap = cv2.VideoCapture(str(source_path))
-            if not cap.isOpened():
+            # Open video (handle Chinese characters in path)
+            cap = self._videocapture_unicode(str(source_path))
+            if cap is None or not cap.isOpened():
                 return None
             
             # Get video properties
@@ -449,7 +491,7 @@ class ThreePointRuleClassifier:
             print(f"Warning: Failed to create censored video: {str(e)}")
             return None
     
-    def _apply_blur_face_censor(self, file_path: str) -> Optional[str]:
+    def _apply_blur_face_censor(self, file_path: str, preserve_subfolder: Optional[str] = None) -> Optional[str]:
         """
         Apply face-only blur filter to censor faces in images or videos
         Uses face_blur module to detect and blur only face regions
@@ -472,6 +514,8 @@ class ThreePointRuleClassifier:
             
             # Create face censor folder if it doesn't exist
             face_censor_path = Path(self.face_censor_folder)
+            if preserve_subfolder:
+                face_censor_path = face_censor_path / preserve_subfolder
             face_censor_path.mkdir(parents=True, exist_ok=True)
             
             # Initialize face blur processor
@@ -490,8 +534,8 @@ class ThreePointRuleClassifier:
             import cv2
             if is_video:
                 # For video, check first frame for faces
-                cap = cv2.VideoCapture(str(source_path))
-                if cap.isOpened():
+                cap = self._videocapture_unicode(str(source_path))
+                if cap is not None and cap.isOpened():
                     ret, frame = cap.read()
                     cap.release()
                     if ret:
@@ -503,7 +547,7 @@ class ThreePointRuleClassifier:
                     return None
             else:
                 # For image, check if faces exist
-                img = cv2.imread(str(source_path))
+                img = self._imread_unicode(str(source_path))
                 if img is None:
                     return None
                 faces = face_processor.detect_faces(img)
@@ -525,8 +569,8 @@ class ThreePointRuleClassifier:
             if is_video:
                 # Calculate max frames if video trim is enabled
                 if self.video_trim_percentage:
-                    cap = cv2.VideoCapture(str(source_path))
-                    if cap.isOpened():
+                    cap = self._videocapture_unicode(str(source_path))
+                    if cap is not None and cap.isOpened():
                         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                         max_frames = max(1, int(total_frames * self.video_trim_percentage)) if total_frames > 0 else None
                         cap.release()
@@ -544,6 +588,115 @@ class ThreePointRuleClassifier:
             return None
         except Exception as e:
             print(f"Warning: Failed to create face-censored version: {str(e)}")
+            return None
+    
+    def _imread_unicode(self, image_path: str):
+        """
+        Read image with Unicode path support (handles Chinese characters)
+        
+        Args:
+            image_path: Path to image file (may contain Chinese characters)
+            
+        Returns:
+            OpenCV image (numpy array) or None if failed
+        """
+        try:
+            import cv2
+            # Use numpy to read file bytes, then decode with OpenCV
+            # This method handles Unicode paths correctly
+            with open(image_path, 'rb') as f:
+                image_bytes = f.read()
+                if len(image_bytes) == 0:
+                    return None
+                image_data = np.frombuffer(image_bytes, np.uint8)
+                img = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+                return img
+        except Exception as e:
+            # Fallback: try direct path (may work in some cases)
+            try:
+                import cv2
+                return cv2.imread(image_path)
+            except:
+                return None
+    
+    def _videocapture_unicode(self, video_path: str):
+        """
+        Open video with Unicode path support (handles Chinese characters)
+        
+        Args:
+            video_path: Path to video file (may contain Chinese characters)
+            
+        Returns:
+            cv2.VideoCapture object or None if failed
+        """
+        try:
+            import cv2
+            # On Windows, use \\?\ prefix to handle Unicode paths
+            if sys.platform == 'win32':
+                # Convert to absolute path and add \\?\ prefix for long/Unicode paths
+                abs_path = os.path.abspath(video_path)
+                unicode_path = '\\\\?\\' + abs_path
+                cap = cv2.VideoCapture(unicode_path)
+            else:
+                cap = cv2.VideoCapture(video_path)
+            return cap
+        except Exception as e:
+            return None
+    
+    def _create_output_zip(self) -> Optional[str]:
+        """
+        Copy all output folders to result_pack folder 
+        
+        Returns:
+            Path to result_pack folder if successful, None otherwise
+        """
+        try:
+            # Define folders to include
+            folders_to_copy = [
+                'censor_images',
+                'safe_images',
+                'unsafe_images',
+                'face_censors'
+            ]
+            
+            # Check if any folder has content
+            has_content = False
+            for folder in folders_to_copy:
+                folder_path = Path(folder)
+                if folder_path.exists() and any(folder_path.iterdir()):
+                    has_content = True
+                    break
+            
+            if not has_content:
+                print("No output files to copy, skipping result_pack creation")
+                return None
+            
+            # Create result_pack folder if it doesn't exist
+            result_pack_dir = Path('result_pack')
+            result_pack_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create timestamped subfolder
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_folder = result_pack_dir / f"classification_results_{timestamp}"
+            output_folder.mkdir(parents=True, exist_ok=True)
+            
+            print(f"\nCopying output folders to: {output_folder}")
+            
+            # Copy each folder to result_pack, preserving structure
+            for folder_name in folders_to_copy:
+                source_folder = Path(folder_name)
+                if source_folder.exists():
+                    dest_folder = output_folder / folder_name
+                    # Copy entire folder structure
+                    if source_folder.is_dir():
+                        shutil.copytree(source_folder, dest_folder, dirs_exist_ok=True)
+                        print(f"  Copied: {folder_name}/")
+            
+            print(f"Output folder created: {output_folder}")
+            return str(output_folder)
+            
+        except Exception as e:
+            print(f"Warning: Failed to create result_pack folder: {str(e)}")
             return None
     
     def _save_results_append(self, output_file: str, new_results):
@@ -680,9 +833,12 @@ class ThreePointRuleClassifier:
             self._save_results_append(output_file, results)
             print(f"Results saved to: {output_file}")
         
+        # Copy output folders to result_pack after classification
+        self._create_output_zip()
+        
         return results
     
-    def classify_video(self, video_path: str, sample_frames: int = 10) -> Dict:
+    def classify_video(self, video_path: str, sample_frames: int = 10, preserve_subfolder: Optional[str] = None) -> Dict:
         """
         Classify a video file by sampling frames
         
@@ -693,7 +849,8 @@ class ThreePointRuleClassifier:
         Returns:
             Dictionary containing classification results
         """
-        if not Path(video_path).exists():
+        # Check if file exists (handle Unicode paths)
+        if not os.path.exists(video_path):
             return {
                 'safe': False,
                 'error': f'Video file not found: {video_path}',
@@ -704,8 +861,8 @@ class ThreePointRuleClassifier:
             import cv2
             
             # Open video file
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
+            cap = self._videocapture_unicode(video_path)
+            if cap is None or not cap.isOpened():
                 return {
                     'safe': False,
                     'error': f'Could not open video file: {video_path}',
@@ -794,19 +951,19 @@ class ThreePointRuleClassifier:
             face_censored_to = None
             
             if is_safe and self.safe_folder:
-                moved_to = self._move_to_folder(video_path, self.safe_folder)
+                moved_to = self._move_to_folder(video_path, self.safe_folder, preserve_subfolder)
             elif not is_safe:
                 # Create censored version first if censor_folder is set
                 if self.censor_folder:
-                    censored_to = self._apply_blur_censor(video_path)
+                    censored_to = self._apply_blur_censor(video_path, preserve_subfolder)
                 
                 # Create face-censored version if face_censor_folder is set
                 if self.face_censor_folder:
-                    face_censored_to = self._apply_blur_face_censor(video_path)
+                    face_censored_to = self._apply_blur_face_censor(video_path, preserve_subfolder)
                 
                 # Then move original to unsafe folder
                 if self.unsafe_folder:
-                    moved_to = self._move_to_folder(video_path, self.unsafe_folder)
+                    moved_to = self._move_to_folder(video_path, self.unsafe_folder, preserve_subfolder)
             
             return {
                 'safe': is_safe,
@@ -880,7 +1037,177 @@ class ThreePointRuleClassifier:
         else:
             print(f"No files found in {directory_path}")
         
-        return self.classify_batch(file_paths, output_file)
+        results = self.classify_batch(file_paths, output_file)
+        
+        # Note: result_pack folder creation is already handled in classify_batch
+        
+        return results
+    
+    def classify_untagged_folders(self, untagged_dir: str = 'untagged', output_file: Optional[str] = None) -> Dict:
+        """
+        Classify all subfolders in untagged directory, one by one
+        Each subfolder's results are organized in output folders with subfolder structure
+        Each subfolder gets its own output folder in result_pack
+        
+        Args:
+            untagged_dir: Path to untagged directory (default: 'untagged')
+            output_file: Optional path to save results as JSON
+            
+        Returns:
+            Dictionary containing results for all subfolders
+        """
+        untagged_path = Path(untagged_dir)
+        if not untagged_path.exists():
+            return {
+                'error': f'Untagged directory not found: {untagged_dir}',
+                'results': []
+            }
+        
+        # Find all subdirectories
+        subfolders = [d for d in untagged_path.iterdir() if d.is_dir()]
+        
+        if not subfolders:
+            print(f"No subfolders found in {untagged_dir}")
+            return {
+                'total_folders': 0,
+                'results': []
+            }
+        
+        print(f"Found {len(subfolders)} subfolders in {untagged_dir}")
+        print("=" * 60)
+        
+        all_results = {
+            'total_folders': len(subfolders),
+            'folders': []
+        }
+        
+        for subfolder in subfolders:
+            subfolder_name = subfolder.name
+            print(f"\nProcessing subfolder: {subfolder_name}")
+            print("-" * 60)
+            
+            # Classify this subfolder with preserve_subfolder
+            # We need to modify classify_batch to support preserve_subfolder
+            # For now, let's use classify_directory and then manually organize
+            
+            # Find all files in subfolder
+            extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.mp4', '.avi', '.mov', '.mkv')
+            file_paths = []
+            for ext in extensions:
+                file_paths.extend(subfolder.glob(f'*{ext}'))
+                file_paths.extend(subfolder.glob(f'*{ext.upper()}'))
+            
+            if not file_paths:
+                print(f"  No files found in {subfolder_name}, skipping")
+                continue
+            
+            # Process each file with preserve_subfolder
+            folder_results = {
+                'subfolder': subfolder_name,
+                'total_files': len(file_paths),
+                'safe_count': 0,
+                'unsafe_count': 0,
+                'error_count': 0,
+                'results': []
+            }
+            
+            video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv')
+            for file_path in file_paths:
+                is_video = file_path.suffix.lower() in video_extensions
+                try:
+                    if is_video:
+                        result = self.classify_video(str(file_path), preserve_subfolder=subfolder_name)
+                    else:
+                        result = self.classify_image(str(file_path), preserve_subfolder=subfolder_name)
+                    
+                    folder_results['results'].append(result)
+                    
+                    if 'error' in result:
+                        folder_results['error_count'] += 1
+                    elif result.get('safe', False):
+                        folder_results['safe_count'] += 1
+                    else:
+                        folder_results['unsafe_count'] += 1
+                except Exception as e:
+                    folder_results['error_count'] += 1
+                    folder_results['results'].append({
+                        'error': str(e),
+                        'file_path': str(file_path)
+                    })
+            
+            all_results['folders'].append(folder_results)
+            
+            # Create output folder for this subfolder
+            output_path = self._create_output_zip_for_subfolder(subfolder_name)
+            if output_path:
+                print(f"  Created folder: {output_path}")
+            
+            print(f"  Completed: {subfolder_name} - Safe: {folder_results['safe_count']}, Unsafe: {folder_results['unsafe_count']}, Errors: {folder_results['error_count']}")
+        
+        # Save results if specified
+        if output_file:
+            self._save_results_append(output_file, all_results)
+        
+        print("\n" + "=" * 60)
+        print(f"All subfolders processed: {len(subfolders)} folders")
+        
+        return all_results
+    
+    def _create_output_zip_for_subfolder(self, subfolder_name: str) -> Optional[str]:
+        """
+        Copy a specific subfolder's output to result_pack folder 
+        
+        Args:
+            subfolder_name: Name of the subfolder (e.g., "glass_girl")
+            
+        Returns:
+            Path to created folder if successful, None otherwise
+        """
+        try:
+            # Define folders to include
+            folders_to_copy = [
+                'censor_images',
+                'safe_images',
+                'unsafe_images',
+                'face_censors'
+            ]
+            
+            # Check if subfolder has content in any output folder
+            has_content = False
+            for folder in folders_to_copy:
+                folder_path = Path(folder) / subfolder_name
+                if folder_path.exists() and any(folder_path.iterdir()):
+                    has_content = True
+                    break
+            
+            if not has_content:inst
+                return None
+            
+            # Create result_pack folder if it doesn't exist
+            result_pack_dir = Path('result_pack')
+            result_pack_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create output folder for this subfolder
+            output_folder = result_pack_dir / subfolder_name
+            output_folder.mkdir(parents=True, exist_ok=True)
+            
+            print(f"  Creating output folder: {output_folder}")
+            
+            # Copy each folder's subfolder content, preserving structure
+            for folder_name in folders_to_copy:
+                source_subfolder = Path(folder_name) / subfolder_name
+                if source_subfolder.exists():
+                    dest_folder = output_folder / folder_name
+                    # Copy entire subfolder structure
+                    if source_subfolder.is_dir():
+                        shutil.copytree(source_subfolder, dest_folder, dirs_exist_ok=True)
+                        print(f"    Copied: {folder_name}/{subfolder_name}/")
+            
+            return str(output_folder)
+            
+        except Exception as e:
+            print(f"  Warning: Failed to create result_pack folder for {subfolder_name}: {str(e)}")
+            return None
 
 
 def main():

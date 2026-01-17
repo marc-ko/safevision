@@ -11,6 +11,7 @@ from typing import List, Optional, Tuple
 from datetime import datetime
 import os
 import urllib.request
+import ssl
 
 
 class FaceBlurProcessor:
@@ -49,7 +50,7 @@ class FaceBlurProcessor:
             if (major > 4) or (major == 4 and minor > 5) or (major == 4 and minor == 5 and patch >= 4):
                 # Try to use YuNet - need to download model file first
                 try:
-                    yunet_model_path = self._download_yunet_model()
+                    yunet_model_path = self._download_yunet_model('.assets')
                     if yunet_model_path and os.path.exists(yunet_model_path):
                         self.face_detector = cv2.FaceDetectorYN.create(
                             model=yunet_model_path,
@@ -83,27 +84,43 @@ class FaceBlurProcessor:
             print(f"Warning: Failed to initialize face detector: {str(e)}")
             self.detection_method = None
     
-    def _download_yunet_model(self, model_dir: str = '.') -> Optional[str]:
+    def _download_yunet_model(self, model_dir: str = '.assets') -> Optional[str]:
         """
         Download YuNet model file if it doesn't exist
         
         Args:
-            model_dir: Directory to save model file
+            model_dir: Directory to save model file (default: .assets)
             
         Returns:
             Path to model file or None if failed
         """
         try:
+            # Create .assets directory if it doesn't exist
+            if not os.path.exists(model_dir):
+                os.makedirs(model_dir, exist_ok=True)
+            
             model_file = os.path.join(model_dir, 'face_detection_yunet_2023mar.onnx')
             
             if not os.path.exists(model_file):
                 print("Downloading YuNet model...")
-                url = 'https://github.com/opencv/opencv_zoo/raw/master/models/face_detection_yunet/face_detection_yunet_2023mar.onnx'
+                url = 'https://files.kde.org/digikam/facesengine/yunet/face_detection_yunet_2023mar.onnx'
                 try:
-                    urllib.request.urlretrieve(url, model_file)
+                    # Create SSL context that doesn't verify certificates (for environments with SSL issues)
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+                    
+                    # Download with SSL context
+                    req = urllib.request.Request(url)
+                    with urllib.request.urlopen(req, context=ssl_context) as response:
+                        with open(model_file, 'wb') as out_file:
+                            out_file.write(response.read())
+                    
                     print(f"Downloaded: {model_file}")
                 except Exception as e:
                     print(f"Warning: Failed to download YuNet model: {str(e)}")
+                    print(f"  You can manually download from: {url}")
+                    print(f"  Save it to: {model_file}")
                     return None
             
             return model_file if os.path.exists(model_file) else None
@@ -212,7 +229,6 @@ class FaceBlurProcessor:
                         h = int(face[3])
                         confidence = face[4]
                         
-                        # Lower threshold for better detection (0.3 instead of 0.5)
                         if confidence >= 0.3:  # Confidence threshold
                             faces.append((x, y, w, h))
                             print(f"Detected face (YuNet): ({x}, {y}, {w}, {h}) with confidence {confidence:.2f}")
@@ -226,7 +242,6 @@ class FaceBlurProcessor:
                 
                 for i in range(detections.shape[2]):
                     confidence = detections[0, 0, i, 2]
-                    # Lower threshold for better detection (0.3 instead of 0.5)
                     if confidence > 0.3:  # Confidence threshold
                         x1 = int(detections[0, 0, i, 3] * w)
                         y1 = int(detections[0, 0, i, 4] * h)
@@ -316,8 +331,8 @@ class FaceBlurProcessor:
             Path to saved file if successful, None otherwise
         """
         try:
-            # Read image
-            img = cv2.imread(str(image_path))
+            # Read image (handle Chinese characters in path)
+            img = self._imread_unicode(str(image_path))
             if img is None:
                 return None
             
@@ -342,6 +357,58 @@ class FaceBlurProcessor:
             print(f"Warning: Failed to process image: {str(e)}")
             return None
     
+    def _imread_unicode(self, image_path: str):
+        """
+        Read image with Unicode path support (handles Chinese characters)
+        
+        Args:
+            image_path: Path to image file (may contain Chinese characters)
+            
+        Returns:
+            OpenCV image (numpy array) or None if failed
+        """
+        try:
+            # Use numpy to read file bytes, then decode with OpenCV
+            # This method handles Unicode paths correctly
+            with open(image_path, 'rb') as f:
+                image_bytes = f.read()
+                if len(image_bytes) == 0:
+                    return None
+                image_data = np.frombuffer(image_bytes, np.uint8)
+                img = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+                return img
+        except Exception as e:
+            # Fallback: try direct path (may work in some cases)
+            try:
+                return cv2.imread(image_path)
+            except:
+                return None
+    
+    def _videocapture_unicode(self, video_path: str):
+        """
+        Open video with Unicode path support (handles Chinese characters)
+        
+        Args:
+            video_path: Path to video file (may contain Chinese characters)
+            
+        Returns:
+            cv2.VideoCapture object or None if failed
+        """
+        try:
+            import sys
+            import os
+            # On Windows, use \\?\ prefix to handle Unicode paths
+            if sys.platform == 'win32':
+                # Convert to absolute path and add \\?\ prefix for long/Unicode paths
+                abs_path = os.path.abspath(video_path)
+                unicode_path = '\\\\?\\' + abs_path
+                cap = cv2.VideoCapture(unicode_path)
+            else:
+                cap = cv2.VideoCapture(video_path)
+            return cap
+        except Exception as e:
+            return None
+
     def process_video(self, video_path: str, output_path: str, 
                      max_frames: Optional[int] = None) -> Optional[str]:
         """
@@ -356,9 +423,9 @@ class FaceBlurProcessor:
             Path to saved file if successful, None otherwise
         """
         try:
-            # Open video
-            cap = cv2.VideoCapture(str(video_path))
-            if not cap.isOpened():
+            # Open video (handle Chinese characters in path)
+            cap = self._videocapture_unicode(str(video_path))
+            if cap is None or not cap.isOpened():
                 return None
             
             # Get video properties
