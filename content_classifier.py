@@ -621,25 +621,51 @@ class ThreePointRuleClassifier:
     
     def classify_batch(self, image_paths: List[str], output_file: Optional[str] = None) -> Dict:
         """
-        Classify multiple images
+        Classify multiple images and videos
         
         Args:
-            image_paths: List of image file paths
+            image_paths: List of image/video file paths
             output_file: Optional path to save results as JSON
             
         Returns:
-            Dictionary containing results for all images
+            Dictionary containing results for all files
         """
+        # Separate images and videos
+        video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv')
+        image_files = []
+        video_files = []
+        
+        for file_path in image_paths:
+            path = Path(file_path)
+            if path.suffix.lower() in video_extensions:
+                video_files.append(file_path)
+            else:
+                image_files.append(file_path)
+        
         results = {
-            'total_images': len(image_paths),
+            'total_images': len(image_files),
+            'total_videos': len(video_files),
             'safe_count': 0,
             'unsafe_count': 0,
             'error_count': 0,
             'results': []
         }
         
-        for image_path in image_paths:
+        # Process images
+        for image_path in image_files:
             classification = self.classify_image(image_path)
+            results['results'].append(classification)
+            
+            if 'error' in classification:
+                results['error_count'] += 1
+            elif classification['safe']:
+                results['safe_count'] += 1
+            else:
+                results['unsafe_count'] += 1
+        
+        # Process videos
+        for video_path in video_files:
+            classification = self.classify_video(video_path)
             results['results'].append(classification)
             
             if 'error' in classification:
@@ -815,15 +841,15 @@ class ThreePointRuleClassifier:
     def classify_directory(self, directory_path: str, output_file: Optional[str] = None, 
                           extensions: Tuple[str, ...] = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.mp4', '.avi', '.mov', '.mkv')) -> Dict:
         """
-        Classify all images in a directory
+        Classify all images and videos in a directory
         
         Args:
-            directory_path: Path to directory containing images
+            directory_path: Path to directory containing images and videos
             output_file: Optional path to save results as JSON
             extensions: Tuple of file extensions to process
             
         Returns:
-            Dictionary containing results for all images
+            Dictionary containing results for all files
         """
         dir_path = Path(directory_path)
         if not dir_path.exists():
@@ -832,17 +858,29 @@ class ThreePointRuleClassifier:
                 'results': []
             }
         
-        # Find all image files
-        image_paths = []
+        # Find all files
+        file_paths = []
         for ext in extensions:
-            image_paths.extend(dir_path.glob(f'*{ext}'))
-            image_paths.extend(dir_path.glob(f'*{ext.upper()}'))
+            file_paths.extend(dir_path.glob(f'*{ext}'))
+            file_paths.extend(dir_path.glob(f'*{ext.upper()}'))
         
-        image_paths = [str(p) for p in image_paths]
+        file_paths = [str(p) for p in file_paths]
         
-        print(f"Found {len(image_paths)} images in {directory_path}")
+        # Count images and videos
+        video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv')
+        image_count = sum(1 for p in file_paths if Path(p).suffix.lower() not in video_extensions)
+        video_count = sum(1 for p in file_paths if Path(p).suffix.lower() in video_extensions)
         
-        return self.classify_batch(image_paths, output_file)
+        if image_count > 0 and video_count > 0:
+            print(f"Found {image_count} images and {video_count} videos in {directory_path}")
+        elif image_count > 0:
+            print(f"Found {image_count} images in {directory_path}")
+        elif video_count > 0:
+            print(f"Found {video_count} videos in {directory_path}")
+        else:
+            print(f"No files found in {directory_path}")
+        
+        return self.classify_batch(file_paths, output_file)
 
 
 def main():
