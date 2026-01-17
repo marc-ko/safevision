@@ -19,7 +19,7 @@ class FaceBlurProcessor:
     Processor for detecting and blurring faces in images and videos
     """
     
-    def __init__(self, blur_intensity: int = 50):
+    def __init__(self, blur_intensity: int = 80):
         """
         Initialize face blur processor
         

@@ -49,11 +49,11 @@ FACE_CENSOR_FOLDER = "face_censors"
 
 # Blur intensity for censoring (higher = more blur, typical range: 1-50)
 # Lower values (5-15) = light blur, Higher values (20-50) = heavy blur
-BLUR_INTENSITY = 50
+BLUR_INTENSITY = 70
 
 # Percentage of video to keep from the beginning (0.0-1.0, None = don't trim)
 # Example: 0.15 means keep first 15% of the video
-VIDEO_TRIM_PERCENTAGE = 0.15
+VIDEO_TRIM_PERCENTAGE = 0.05
 
 # ============================================================================
 
@@ -375,6 +375,10 @@ class ThreePointRuleClassifier:
             import cv2
             
             source_path = Path(image_path)
+            if not source_path.exists():
+                print(f"Warning: Source image not found for censoring: {source_path.name}")
+                return None
+            
             censor_path = Path(self.censor_folder)
             if preserve_subfolder:
                 censor_path = censor_path / preserve_subfolder
@@ -383,6 +387,7 @@ class ThreePointRuleClassifier:
             # Read image (handle Chinese characters in path)
             img = self._imread_unicode(str(source_path))
             if img is None:
+                print(f"Warning: Could not read image for censoring: {source_path.name}")
                 return None
             
             # Apply Gaussian blur (light blur)
@@ -401,7 +406,35 @@ class ThreePointRuleClassifier:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 dest_path = censor_path / f"{stem}_{timestamp}{suffix}"
             
-            cv2.imwrite(str(dest_path), blurred)
+            # Save image (handle Unicode paths using cv2.imencode)
+            try:
+                ext = dest_path.suffix.lower()
+                if ext == '.jpg' or ext == '.jpeg':
+                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95]
+                    ext_str = '.jpg'
+                elif ext == '.png':
+                    encode_param = [int(cv2.IMWRITE_PNG_COMPRESSION), 9]
+                    ext_str = '.png'
+                else:
+                    encode_param = []
+                    ext_str = ext if ext else '.jpg'
+                
+                success, encoded_img = cv2.imencode(ext_str, blurred, encode_param)
+                if success:
+                    with open(dest_path, 'wb') as f:
+                        f.write(encoded_img.tobytes())
+                else:
+                    print(f"Warning: Failed to encode censored image: {dest_path.name}")
+                    return None
+            except Exception as e:
+                print(f"Warning: Failed to save censored image {dest_path.name}: {e}")
+                return None
+            
+            # Verify file was created
+            if not dest_path.exists():
+                print(f"Warning: Censored image file was not created: {dest_path}")
+                return None
+            
             return str(dest_path)
             
         except Exception as e:
@@ -431,6 +464,7 @@ class ThreePointRuleClassifier:
             # Open video (handle Chinese characters in path)
             cap = self._videocapture_unicode(str(source_path))
             if cap is None or not cap.isOpened():
+                print(f"Warning: Could not open video for censoring: {source_path.name}")
                 return None
             
             # Get video properties
@@ -441,6 +475,7 @@ class ThreePointRuleClassifier:
             
             if fps == 0 or width == 0 or height == 0 or total_frames == 0:
                 cap.release()
+                print(f"Warning: Invalid video properties for censoring: {source_path.name}")
                 return None
             
             # Calculate frames to process (first N% of video)
@@ -466,6 +501,7 @@ class ThreePointRuleClassifier:
             
             if not out.isOpened():
                 cap.release()
+                print(f"Warning: Could not create output video writer for: {source_path.name}")
                 return None
             
             # Process first N% of frames
@@ -484,6 +520,11 @@ class ThreePointRuleClassifier:
             
             cap.release()
             out.release()
+            
+            # Verify output file was created
+            if not dest_path.exists():
+                print(f"Warning: Censored video file was not created: {dest_path}")
+                return None
             
             return str(dest_path)
             
