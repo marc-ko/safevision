@@ -375,10 +375,6 @@ class ThreePointRuleClassifier:
             import cv2
             
             source_path = Path(image_path)
-            if not source_path.exists():
-                print(f"Warning: Source image not found for censoring: {source_path.name}")
-                return None
-            
             censor_path = Path(self.censor_folder)
             if preserve_subfolder:
                 censor_path = censor_path / preserve_subfolder
@@ -387,7 +383,6 @@ class ThreePointRuleClassifier:
             # Read image (handle Chinese characters in path)
             img = self._imread_unicode(str(source_path))
             if img is None:
-                print(f"Warning: Could not read image for censoring: {source_path.name}")
                 return None
             
             # Apply Gaussian blur (light blur)
@@ -464,7 +459,6 @@ class ThreePointRuleClassifier:
             # Open video (handle Chinese characters in path)
             cap = self._videocapture_unicode(str(source_path))
             if cap is None or not cap.isOpened():
-                print(f"Warning: Could not open video for censoring: {source_path.name}")
                 return None
             
             # Get video properties

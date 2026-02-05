@@ -66,6 +66,19 @@ if exist "unsafe_images" (
     echo   [INFO] unsafe_images folder does not exist
 )
 
+REM Clean untagged folder (if it's used for output)
+if exist "untagged" (
+    echo Cleaning unsafe_images...
+    del /Q /S "untagged\*" 2>nul
+    for /d %%d in ("untagged\*") do rmdir /S /Q "%%d" 2>nul
+    if %errorlevel% == 0 (
+        echo   [OK] untagged cleaned
+    ) else (
+        echo   [INFO] untagged is empty or already clean
+    )
+) else (
+    echo   [INFO] untagged folder does not exist
+)
 
 REM Clean classification results JSON file
 if exist "classification_results.json" (
